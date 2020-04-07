@@ -1,0 +1,128 @@
+Creating a Kubernetes environment.
+Anyone with a basic understanding of Linux can easily create their own Kubernetes (AKA Kube or K8s) environment. Here are  steps to create your own environment.  Starting with a base OS image, this should take 20-30 minutes to complete.
+
+You can start with almost any Linux flavor and virtualization platform that supports linked clones.  I prefer CentOS.  Here is an image you can use as your base:  https://rvbdtech-my.sharepoint.com/:f:/g/personal/bwynns_riverbed_com/EvxuTjcmv3JIq5aciQ4y-OQB4S7cNwlibuv1rqxfZ4q0kA?e=4ywSlL  user and password are root/password
+
+From this instance you will create at least two systems - one is the Kube master and the other is a worker node.  
+
+CREATE KUBE MASTER NODE
+Using your virtualization platform of choice, import the OVF.  For space reasons, I use linked clones for the Kube systems.
+
+From this image, create at least two linked clones.  One for the Kube master and one for a worker node.  You can create as many worker nodes as you'd like.
+
+Boot the master node and change the hostname to something unique.  If you are using CentOS, you can run hostnamectl set-hostname newhostname
+
+Reboot the image.  If using CentOS, issue init 6
+
+CREATE WORKER NODES
+Create linked clones for each worker node you want to create and change the hostname as you did on the master node.
+
+Once the master and worker nodes are running with unique hostnames, update the /etc/hosts file with the ip addresses of the Kube master and worker nodes.  (You may have to adjust your virtualization platform network settings to have the nodes talk to each other.)  
+Mine looks like this.  I added aliases to make things more efficient when moving stuff between nodes.
+	127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+	::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+	192.168.112.230  kmaster1wynns master
+	192.168.112.234  knodeawynns node1
+	192.168.112.233  knodebwynns node2
+
+CONFIGURE KUBERNETES ON THE MASTER NODE
+Run this script on your master as root or issue the commands manually.  This will work on CentOS.  It might perform differently on your platform.  
+~~~~~~
+#!/bin/bash
+setenforce 0
+sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+#Turn off swap
+swapoff -a
+sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+#Firewall rules
+firewall-cmd --permanent --add-port=6443/tcp
+firewall-cmd --permanent --add-port=6781-6783/tcp
+firewall-cmd --permanent --add-port=6783-6784/udp
+firewall-cmd --permanent --add-port=2379-2380/tcp
+firewall-cmd --permanent --add-port=10250/tcp
+firewall-cmd --permanent --add-port=10251/tcp
+firewall-cmd --permanent --add-port=10252/tcp
+firewall-cmd --permanent --add-port=10255/tcp
+firewall-cmd --reload
+modprobe br_netfilter
+echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+
+#Build Kube Repo
+cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
+        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+#Install Kube and Docker
+yum install kubeadm docker -y
+
+#start Kube and Docker
+systemctl restart docker && systemctl enable docker
+systemctl  restart kubelet && systemctl enable kubelet
+kubeadm init
+
+#config and setup cluster
+mkdir -p $HOME/.kube
+cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+chown $(id -u):$(id -g) $HOME/.kube/config
+
+#setup kube network and dns
+export kubever=$(kubectl version | base64 | tr -d '\n')
+kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$kubever"
+
+#End of Script
+~~~~~~
+In the script output you will see a line that starts with "kubeadm join ..."  copy this command and save it somewhere.  You will need it when configuring the worker nodes.
+
+CONFIGURE KUBERNETES ON THE WORKER NODES
+On the worker nodes, run the following script:
+~~~~~~
+#!/bin/bash
+setenforce 0
+sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+#Turn off swap
+swapoff -a
+sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+#Firewall rules
+firewall-cmd --permanent --add-port=10250/tcp
+firewall-cmd --permanent --add-port=10255/tcp
+firewall-cmd --permanent --add-port=30000-32767/tcp
+firewall-cmd --permanent --add-port=6781-6783/tcp
+firewall-cmd --permanent --add-port=6783-6784/udp
+firewall-cmd  --reload
+modprobe br_netfilter
+echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+
+#build Kube repo
+cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
+        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+#Install Kube
+yum install kubeadm docker -y
+systemctl restart docker && systemctl enable docker
+systemctl  restart kubelet && systemctl enable kubelet
+
+#When successful, run the join string you saved when you configured the kube master
+#End of Script
+~~~~~~
+On the master node, run: 'kubectl get nodes' to see the status of your nodes in the cluster.  Your nodes should show 'Ready'
+	[root@kmaster1wynns ~]# kubectl get nodes
+	NAME            STATUS   ROLES    AGE   VERSION
+	kmaster1wynns   Ready    master   45d   v1.17.0
+	knodeawynns     Ready    <none>   45d   v1.17.0
+	knodebwynns     Ready    <none>   45d   v1.17.0
+
