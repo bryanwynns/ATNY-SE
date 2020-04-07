@@ -1,0 +1,67 @@
+# .Net Core v3 application to be used with Aternity APM daemonset deployment
+# Externally access application on port 5000.  This script maps external port 5000 to the application's port 80
+# Change the externalIP to your master node IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecom-service
+spec:
+  type: NodePort
+  ports:
+  - port: 5000
+    targetPort: 80
+  selector:
+    app: app-ecom
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecom-service-lb
+spec:
+  type: LoadBalancer
+  externalIPs:
+  - 192.168.1.55
+  ports:
+  - port: 5000
+    targetPort: 80
+  selector:
+    app: app-ecom
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecom
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-ecom
+  template:
+    metadata:
+      labels:
+        app: app-ecom
+    spec:
+      containers:
+      - name: ecom
+        image: simplcommerce/ci-build
+        ports:
+        - containerPort: 80
+        envFrom:
+            - configMapRef:
+                name: rvbd-instrumentation-env
+        env: 
+          - name: RVBD_DSAHOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+            #- name: RVBD_APP_CONFIG
+            #  value: new-config
+            #- name: RVBD_APP_INSTANCE
+            #  value: MyTomcatApp
+        volumeMounts:
+        - mountPath: /opt/Panorama
+          name: rvbd-files 
+      volumes:
+      - hostPath:
+          path: /opt/Panorama
+        name: rvbd-files
